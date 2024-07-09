@@ -22,6 +22,8 @@ https://huggingface.co/models?filter=text-generation
 """
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
+# https://github.com/huggingface/transformers/blob/b109257f4f/examples/pytorch/language-modeling/run_clm_no_trainer.py
+
 import argparse
 import json
 import logging
@@ -30,7 +32,6 @@ import os
 import random
 from itertools import chain
 from pathlib import Path
-import warnings
 
 import datasets
 import torch
@@ -46,18 +47,16 @@ import transformers
 from transformers import (
     CONFIG_MAPPING,
     MODEL_MAPPING,
+    AutoConfig,
+    AutoModelForCausalLM,
     AutoTokenizer,
     SchedulerType,
     default_data_collator,
     get_scheduler,
-    Adafactor,
 )
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-from infini_llama import LlamaForCausalLM, LlamaConfig
-from datasets import DatasetDict, interleave_datasets
 
-torch.autograd.set_detect_anomaly(True)
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.40.0.dev0")
@@ -204,7 +203,7 @@ def parse_args():
     parser.add_argument(
         "--block_size",
         type=int,
-        default=32768,
+        default=None,
         help=(
             "Optional input sequence length after tokenization. The training dataset will be truncated in block of"
             " this size for training. Default to the model max input length for single sentence inputs (take into"
@@ -285,13 +284,24 @@ def parse_args():
             "If passed, LLM loading time and RAM consumption will be benefited."
         ),
     )
-    parser.add_argument(
-        "--segment_length",
-        type=int,
-        default=2048,
-        help="The length of the segment to split the input into.",
-    )
     args = parser.parse_args()
+
+    # Sanity checks
+    if (
+        args.dataset_name is None
+        and args.train_file is None
+        and args.validation_file is None
+    ):
+        raise ValueError("Need either a dataset name or a training/validation file.")
+    else:
+        if args.train_file is not None:
+            extension = args.train_file.split(".")[-1]
+            if extension not in ["csv", "json", "txt"]:
+                raise ValueError("`train_file` should be a csv, json or txt file.")
+        if args.validation_file is not None:
+            extension = args.validation_file.split(".")[-1]
+            if extension not in ["csv", "json", "txt"]:
+                raise ValueError("`validation_file` should be a csv, json or txt file.")
 
     if args.push_to_hub:
         if args.output_dir is None:
@@ -317,18 +327,9 @@ def main():
     if args.with_tracking:
         accelerator_log_kwargs["log_with"] = args.report_to
         accelerator_log_kwargs["project_dir"] = args.output_dir
-    segment_length = args.segment_length
-    print("block_size:", args.block_size)
-    print("segment_length:", segment_length)
-    gradient_accumulation_steps = args.block_size // segment_length
-    print("gradient_accumulation_steps:", gradient_accumulation_steps)
-    print("args.gradient_accumulation_steps:", args.gradient_accumulation_steps)
-    if args.gradient_accumulation_steps != 1:
-        warnings.warn(f"Overwriting args.gradient_accumulation_steps to {gradient_accumulation_steps}")
-    print("overwriting args.gradient_accumulation_steps")
-    args.gradient_accumulation_steps = gradient_accumulation_steps
+
     accelerator = Accelerator(
-        gradient_accumulation_steps=gradient_accumulation_steps,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         **accelerator_log_kwargs,
     )
 
@@ -395,6 +396,33 @@ def main():
                 args.dataset_config_name,
                 split=f"train[{args.validation_split_percentage}%:]",
             )
+    else:
+        data_files = {}
+        dataset_args = {}
+        if args.train_file is not None:
+            data_files["train"] = args.train_file
+            extension = args.train_file.split(".")[-1]
+        if args.validation_file is not None:
+            data_files["validation"] = args.validation_file
+            extension = args.validation_file.split(".")[-1]
+        if extension == "txt":
+            extension = "text"
+            dataset_args["keep_linebreaks"] = not args.no_keep_linebreaks
+        raw_datasets = load_dataset(extension, data_files=data_files, **dataset_args)
+        # If no validation data is there, validation_split_percentage will be used to divide the dataset.
+        if "validation" not in raw_datasets.keys():
+            raw_datasets["validation"] = load_dataset(
+                extension,
+                data_files=data_files,
+                split=f"train[:{args.validation_split_percentage}%]",
+                **dataset_args,
+            )
+            raw_datasets["train"] = load_dataset(
+                extension,
+                data_files=data_files,
+                split=f"train[{args.validation_split_percentage}%:]",
+                **dataset_args,
+            )
 
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.
@@ -404,14 +432,12 @@ def main():
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
     if args.config_name:
-        # Not use AutoConfig, to avoid HF Llama model loading
-        config = LlamaConfig.from_pretrained(
+        config = AutoConfig.from_pretrained(
             args.config_name,
             trust_remote_code=args.trust_remote_code,
         )
     elif args.model_name_or_path:
-        # Not use AutoConfig, to avoid HF Llama model loading
-        config = LlamaConfig.from_pretrained(
+        config = AutoConfig.from_pretrained(
             args.model_name_or_path,
             trust_remote_code=args.trust_remote_code,
         )
@@ -438,22 +464,17 @@ def main():
         )
 
     if args.model_name_or_path:
-        # Not use AutoModelForCausalLM to avoid HF Llama model loading
-        model = LlamaForCausalLM.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             from_tf=bool(".ckpt" in args.model_name_or_path),
             config=config,
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
-            # torch_dtype="auto",
-            device_map="auto",
         )
     else:
         logger.info("Training new model from scratch")
-        model = LlamaForCausalLM(
-            config,
-            # torch_dtype=torch.bfloat16,
-            device_map="auto",
+        model = AutoModelForCausalLM.from_config(
+            config, trust_remote_code=args.trust_remote_code
         )
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
@@ -531,14 +552,14 @@ def main():
     train_dataset = lm_datasets["train"]
     eval_dataset = lm_datasets["validation"]
 
-    # # Log a few random samples from the training set:
-    # for index in random.sample(range(len(train_dataset)), 3):
-    #     logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
+    # Log a few random samples from the training set:
+    for index in random.sample(range(len(train_dataset)), 3):
+        logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
 
     # DataLoaders creation:
     train_dataloader = DataLoader(
         train_dataset,
-        shuffle=False,  # Remove shuffle
+        shuffle=True,
         collate_fn=default_data_collator,
         batch_size=args.per_device_train_batch_size,
     )
@@ -569,11 +590,7 @@ def main():
             "weight_decay": 0.0,
         },
     ]
-    optimizer = Adafactor(
-        optimizer_grouped_parameters,
-        lr=args.learning_rate,
-        relative_step=False,
-    )
+    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -628,7 +645,7 @@ def main():
         experiment_config["lr_scheduler_type"] = experiment_config[
             "lr_scheduler_type"
         ].value
-        accelerator.init_trackers("InfiniTransformer", experiment_config)
+        accelerator.init_trackers("clm_no_trainer", experiment_config)
 
     # Train!
     total_batch_size = (
@@ -638,8 +655,7 @@ def main():
     )
 
     logger.info("***** Running training *****")
-    num_examples = len(train_dataset)
-    logger.info(f"  Num examples = {num_examples}")
+    logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(
         f"  Instantaneous batch size per device = {args.per_device_train_batch_size}"
@@ -647,9 +663,8 @@ def main():
     logger.info(
         f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
     )
-    logger.info(f"  Gradient Accumulation steps = {gradient_accumulation_steps}")
+    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
-    logger.info(f"  Number of model parameters = {model.num_parameters()}")
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(
         range(args.max_train_steps), disable=not accelerator.is_local_main_process
@@ -696,7 +711,8 @@ def main():
 
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
-        total_loss = 0
+        if args.with_tracking:
+            total_loss = 0
         if (
             args.resume_from_checkpoint
             and epoch == starting_epoch
@@ -709,83 +725,22 @@ def main():
         else:
             active_dataloader = train_dataloader
         for step, batch in enumerate(active_dataloader):
-            total_segment_loss = 0
-            # Segment the batch items into smaller chunks of 2048 tokens
-            input_ids = torch.tensor_split(
-                batch["input_ids"],
-                list(
-                    range(segment_length, batch["input_ids"].shape[1], segment_length)
-                ),
-                dim=1,
-            )
-            if "attention_mask" in batch:
-                attention_mask = torch.tensor_split(
-                    batch["attention_mask"],
-                    list(
-                        range(
-                            segment_length,
-                            batch["attention_mask"].shape[1],
-                            segment_length,
-                        )
-                    ),
-                    dim=1,
-                )
-            if "labels" in batch:
-                labels = torch.tensor_split(
-                    batch["labels"],
-                    list(
-                        range(segment_length, batch["labels"].shape[1], segment_length)
-                    ),
-                    dim=1,
-                )
-            memory, norm_term = {}, {}
-            avg_segment_loss = 0
-            for i in range(len(input_ids)):
-                outputs = model(
-                    input_ids=input_ids[i],
-                    attention_mask=attention_mask[i],
-                    labels=labels[i],
-                    memory=memory,
-                    norm_term=norm_term,
-                )
-                memory = outputs.memory
-                norm_term = outputs.norm_term
+            with accelerator.accumulate(model):
+                outputs = model(**batch)
                 loss = outputs.loss
-                print(f"Loss @ segment {i}:", loss.item())
-                # print(input_ids[i])
-                # accelerator.backward(loss, retain_graph=True)
+                # We keep track of the loss at each epoch
+                if args.with_tracking:
+                    total_loss += loss.detach().float()
                 accelerator.backward(loss)
-                total_loss += loss.detach().float()
-                total_segment_loss += loss.detach().float()
-                # print("Total loss:", total_loss)
-                # print("Total segment loss:", total_segment_loss)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
 
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
-
+            # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
                 completed_steps += 1
-            # Log the training loss and lr every 100 steps
-            LOG_INTERVAL = 1
-            if completed_steps % LOG_INTERVAL == 0:
-                avg_segment_loss = total_segment_loss / len(input_ids)
-                print(
-                    f"Step: {completed_steps}, Loss: {avg_segment_loss.item()}, LR: {lr_scheduler.get_last_lr()[0]}"
-                )
-                print("-" * 10)
-                # Log to wandb by calling `accelerator.log`, `step` is optional
-                accelerator.log(
-                    {
-                        "train/loss": avg_segment_loss.item(),
-                        "train/learning_rate": lr_scheduler.get_last_lr()[0],
-                        "train/epoch": completed_steps / num_examples,
-                    },
-                    step=completed_steps,
-                )
+
             if isinstance(checkpointing_steps, int):
                 if completed_steps % checkpointing_steps == 0:
                     output_dir = f"step_{completed_steps}"
@@ -795,51 +750,11 @@ def main():
             if completed_steps >= args.max_train_steps:
                 break
 
-        print("Finished epoch:", epoch)
-
         model.eval()
         losses = []
         for step, batch in enumerate(eval_dataloader):
-            input_ids = torch.tensor_split(
-                batch["input_ids"],
-                list(
-                    range(segment_length, batch["input_ids"].shape[1], segment_length)
-                ),
-                dim=1,
-            )
-            if "attention_mask" in batch:
-                attention_mask = torch.tensor_split(
-                    batch["attention_mask"],
-                    list(
-                        range(
-                            segment_length,
-                            batch["attention_mask"].shape[1],
-                            segment_length,
-                        )
-                    ),
-                    dim=1,
-                )
-            if "labels" in batch:
-                labels = torch.tensor_split(
-                    batch["labels"],
-                    list(
-                        range(segment_length, batch["labels"].shape[1], segment_length)
-                    ),
-                    dim=1,
-                )
-
-            memory, norm_term = None, None
-            for i in range(len(input_ids)):
-                with torch.no_grad():
-                    outputs = model(
-                        input_ids=input_ids[i],
-                        attention_mask=attention_mask[i],
-                        labels=labels[i],
-                        memory=memory,
-                        norm_term=norm_term,
-                    )
-                memory = outputs.memory
-                norm_term = outputs.norm_term
+            with torch.no_grad():
+                outputs = model(**batch)
 
             loss = outputs.loss
             losses.append(
