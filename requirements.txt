@@ -3,3 +3,4 @@ datasets
 accelerate
 wandb
 transformers==4.40.0
+black

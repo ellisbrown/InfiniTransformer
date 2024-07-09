@@ -25,7 +25,7 @@ config = GemmaConfig.from_pretrained(
 )
 # config.max_position_embeddings = 128
 # config.use_cache = False
-config.segment_size = config.max_position_embeddings # Add config
+config.segment_size = config.max_position_embeddings  # Add config
 
 print(config)
 
@@ -33,8 +33,8 @@ pretrained_model = GemmaForCausalLM.from_pretrained(
     "google/gemma-2b", torch_dtype="auto"
 )
 tokenizer = AutoTokenizer.from_pretrained(
-    "google/gemma-2b", 
+    "google/gemma-2b",
 )
-pretrained_model.save_pretrained('./models/gemma-2b')
-config.save_pretrained('./models/gemma-2b')
-tokenizer.save_pretrained('./models/gemma-2b')
+pretrained_model.save_pretrained("./models/gemma-2b")
+config.save_pretrained("./models/gemma-2b")
+tokenizer.save_pretrained("./models/gemma-2b")

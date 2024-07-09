@@ -731,11 +731,16 @@ class GemmaInfiniAttention(GemmaAttention):
             list(range(self.segment_size, total_len, self.segment_size)),
             dim=1,
         )
-        
+
         # Pre-allocate tensor for all outputs
         bsz, _, hidden_dim = hidden_states.size()
-        final_output = torch.empty(bsz, total_len, hidden_dim, device=hidden_states.device, dtype=hidden_states.dtype)
-
+        final_output = torch.empty(
+            bsz,
+            total_len,
+            hidden_dim,
+            device=hidden_states.device,
+            dtype=hidden_states.dtype,
+        )
 
         debug_print("len(segments):", len(segments))
 
@@ -817,16 +822,18 @@ class GemmaInfiniAttention(GemmaAttention):
             # Prepare output for this segment
             combined_output = combined_output.transpose(1, 2).contiguous()
             combined_output = combined_output.view(bsz, q_len, self.hidden_size)
-            
+
             segment_output = self.o_proj(combined_output)
-        
+
             # Determine the segment size (important for the last segment which might be smaller)
             current_segment_size = segment.size(1)
 
             # Fill the corresponding part of the pre-allocated tensor
-            final_output[:, start_index:start_index + current_segment_size, :] = segment_output
+            final_output[:, start_index : start_index + current_segment_size, :] = (
+                segment_output
+            )
             start_index += current_segment_size
-            
+
         return final_output, None, None
         # Concatenate outputs from all segments
         # final_output = torch.cat(final_outputs, dim=1)

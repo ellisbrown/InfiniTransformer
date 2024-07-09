@@ -7,9 +7,9 @@ from torch.nn import functional as F
 from transformers import GemmaConfig, GemmaForCausalLM, AutoTokenizer, pipeline
 
 model = GemmaForCausalLM.from_pretrained(
-    'models/gemma-2b-wikitext/checkpoint-297',
-    torch_dtype='auto',
-    device_map={'':0},
+    "models/gemma-2b-wikitext/checkpoint-297",
+    torch_dtype="auto",
+    device_map={"": 0},
     attn_implementation="eager",
 )
 
@@ -63,7 +63,7 @@ generated_sequence = tokenizer.decode(input_ids[0], skip_special_tokens=False)
 print("Input:")
 print(text)
 print("generated_sequence:")
-print(generated_sequence.replace(text, ''))
+print(generated_sequence.replace(text, ""))
 
 # Test .generate() method
 generated = model.generate(
@@ -73,4 +73,4 @@ generated = model.generate(
     num_return_sequences=1,
 )
 print("Generated:")
-print(tokenizer.decode(generated[0], skip_special_tokens=False).replace(text, ''))
+print(tokenizer.decode(generated[0], skip_special_tokens=False).replace(text, ""))

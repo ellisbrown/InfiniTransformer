@@ -29,13 +29,14 @@ if torch.cuda.is_available():
     device = "cuda:0"  # set GPU device using CUDA_VISIBLE_DEVICES
 else:
     device = "cpu"
-    
-if os.path.exists('./models/gemma-2b'):
-    model = GemmaForCausalLM.from_pretrained('./models/gemma-2b', 
-                                             torch_dtype='auto', 
-                                             device_map='auto',
-                                             attn_implementation="eager",
-                                            )
+
+if os.path.exists("./models/gemma-2b"):
+    model = GemmaForCausalLM.from_pretrained(
+        "./models/gemma-2b",
+        torch_dtype="auto",
+        device_map="auto",
+        attn_implementation="eager",
+    )
     config = model.config
     print(config)
     print(model)
@@ -70,13 +71,14 @@ else:
     # model = model.to(torch.bfloat16)
     model = model.to(device)
 
-wiki = load_dataset("JeanKaddour/minipile" )
+wiki = load_dataset("JeanKaddour/minipile")
 
 tokenizer = AutoTokenizer.from_pretrained("google/gemma-2b")
 
 
 def tokenize_function(examples):
     return tokenizer(examples["text"])
+
 
 try:
     column_names = list(wiki["train"].features)
@@ -131,7 +133,7 @@ training_args = TrainingArguments(
     save_strategy="epoch",
     # warmup_ratio=0.1,
     max_grad_norm=1.0,
-    gradient_checkpointing=True, # Reduce vram 69G -> 43G
+    gradient_checkpointing=True,  # Reduce vram 69G -> 43G
 )
 
 try:
