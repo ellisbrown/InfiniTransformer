@@ -2,4 +2,4 @@ torch==2.2.2
 datasets
 accelerate
 wandb
-
+transformers==4.40.0
