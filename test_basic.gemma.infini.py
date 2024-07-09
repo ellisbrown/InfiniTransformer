@@ -5,8 +5,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # TODO: set the GPU device
 import torch
 from torch.nn import functional as F
 from transformers import AutoTokenizer, pipeline
-from infini_gemma import GemmaForCausalLM
-from infini_gemma import GemmaConfig
+from infini_gemma import GemmaForCausalLM, GemmaConfig
 
 print("Torch Version:", torch.__version__)
 print("CUDA:", torch.cuda.is_available())
