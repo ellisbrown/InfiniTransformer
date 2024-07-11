@@ -5,7 +5,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # TODO: set the GPU device
 import torch
 from torch.nn import functional as F
 from transformers import AutoTokenizer, pipeline
-from infini_gemma import GemmaForCausalLM, GemmaConfig
+from infini_gemma import GemmaForCausalLM, InfiniGemmaConfig
 
 print("Torch Version:", torch.__version__)
 print("CUDA:", torch.cuda.is_available())
@@ -15,7 +15,7 @@ if torch.cuda.is_available():
 else:
     device = "cpu"
 
-config = GemmaConfig.from_pretrained(
+config = InfiniGemmaConfig.from_pretrained(
     "google/gemma-2b",
 )
 

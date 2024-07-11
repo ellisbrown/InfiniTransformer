@@ -1,7 +1,7 @@
 from transformers import GemmaConfig as OriginalGemmaConfig
 
 
-class GemmaConfig(OriginalGemmaConfig):
+class InfiniGemmaConfig(OriginalGemmaConfig):
     def __init__(
         self,
         vocab_size=256000,
@@ -12,7 +12,8 @@ class GemmaConfig(OriginalGemmaConfig):
         num_key_value_heads=16,
         head_dim=256,
         hidden_act="gelu_pytorch_tanh",
-        hidden_activation=None,
+        # hidden_activation=None,
+        hidden_activation="gelu_pytorch_tanh",
         max_position_embeddings=32768,
         initializer_range=0.02,
         rms_norm_eps=0.000001,

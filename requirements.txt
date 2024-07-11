@@ -4,3 +4,5 @@ accelerate
 wandb
 transformers==4.40.0
 black
+deepspeed
+ezcolorlog

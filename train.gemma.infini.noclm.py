@@ -55,7 +55,7 @@ from transformers import (
 )
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-from infini_gemma import GemmaForCausalLM, GemmaConfig
+from infini_gemma import GemmaForCausalLM, InfiniGemmaConfig
 from datasets import DatasetDict, interleave_datasets
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -399,13 +399,13 @@ def main():
     # download model & vocab.
     if args.config_name:
         # Not use AutoConfig, to avoid HF Gemma model loading
-        config = GemmaConfig.from_pretrained(
+        config = InfiniGemmaConfig.from_pretrained(
             args.config_name,
             trust_remote_code=args.trust_remote_code,
         )
     elif args.model_name_or_path:
         # Not use AutoConfig, to avoid HF Gemma model loading
-        config = GemmaConfig.from_pretrained(
+        config = InfiniGemmaConfig.from_pretrained(
             args.model_name_or_path,
             trust_remote_code=args.trust_remote_code,
         )

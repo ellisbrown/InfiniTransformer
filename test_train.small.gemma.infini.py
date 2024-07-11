@@ -17,7 +17,7 @@ from transformers import (
     set_seed,
     default_data_collator,
 )
-from infini_gemma import GemmaForCausalLM, GemmaConfig
+from infini_gemma import GemmaForCausalLM, InfiniGemmaConfig
 
 set_seed(42)
 
@@ -37,7 +37,7 @@ if os.path.exists("./models/gemma-2b"):
     print(config)
     print(model)
 else:
-    config = GemmaConfig.from_pretrained(
+    config = InfiniGemmaConfig.from_pretrained(
         "google/gemma-2b",
         attn_implementation="eager",
     )

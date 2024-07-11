@@ -52,7 +52,7 @@ from transformers.utils import (
 from transformers.utils.import_utils import is_torch_fx_available
 
 from dataclasses import dataclass
-from .configuration_infini_gemma import GemmaConfig
+from .configuration_infini_gemma import InfiniGemmaConfig
 
 DEBUG = os.environ.get("DEBUG", False)
 
@@ -319,7 +319,7 @@ class GemmaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
     # Ignore copy
-    def __init__(self, config: GemmaConfig, layer_idx: Optional[int] = None):
+    def __init__(self, config: InfiniGemmaConfig, layer_idx: Optional[int] = None):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -783,7 +783,7 @@ class GemmaSdpaAttention(GemmaAttention):
 class GemmaInfiniAttention(GemmaAttention):
     def __init__(
         self,
-        config: GemmaConfig,
+        config: InfiniGemmaConfig,
         layer_idx: Optional[int] = None,
     ):
         super().__init__(config, layer_idx)
@@ -999,7 +999,7 @@ class GemmaInfiniAttention(GemmaAttention):
 
 # Copied from transformers.models.llama.modeling_llama.LlamaDecoderLayer with LLAMA->GEMMA,Llama->Gemma
 class GemmaDecoderLayer(nn.Module):
-    def __init__(self, config: GemmaConfig, layer_idx: int):
+    def __init__(self, config: InfiniGemmaConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
 
@@ -1116,7 +1116,7 @@ GEMMA_START_DOCSTRING = r"""
     GEMMA_START_DOCSTRING,
 )
 class GemmaPreTrainedModel(PreTrainedModel):
-    config_class = GemmaConfig
+    config_class = InfiniGemmaConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _keep_in_fp32_modules = ["inv_freq", "rotary_emb", "cos_cached", "sin_cached"]
@@ -1251,7 +1251,7 @@ class GemmaModel(GemmaPreTrainedModel):
         config: GemmaConfig
     """
 
-    def __init__(self, config: GemmaConfig):
+    def __init__(self, config: InfiniGemmaConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size

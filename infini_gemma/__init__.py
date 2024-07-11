@@ -1,2 +1,2 @@
-from .configuration_infini_gemma import GemmaConfig
+from .configuration_infini_gemma import InfiniGemmaConfig
 from .modeling_infini_gemma import GemmaForCausalLM
