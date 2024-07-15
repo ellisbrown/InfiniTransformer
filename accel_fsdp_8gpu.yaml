@@ -1,5 +1,5 @@
 compute_environment: LOCAL_MACHINE
-debug: false
+debug: true
 distributed_type: FSDP
 downcast_bf16: 'no'
 enable_cpu_affinity: false
@@ -10,15 +10,16 @@ fsdp_config:
   fsdp_cpu_ram_efficient_loading: true
   fsdp_forward_prefetch: false
   fsdp_offload_params: true
-  fsdp_sharding_strategy: FULL_SHARD
+  # fsdp_sharding_strategy: FULL_SHARD
+  fsdp_sharding_strategy: 1
   fsdp_state_dict_type: SHARDED_STATE_DICT
   fsdp_sync_module_states: true
   fsdp_use_orig_params: true
 machine_rank: 0
 # main_process_ip: localhost
+# main_process_ip: prior-cirrascale-17.reviz.ai2.in
 # main_process_ip: 172.17.0.3
-main_process_ip: prior-cirrascale-17.reviz.ai2.in
-main_process_port: 65432
+# main_process_port: 65432
 main_training_function: main
 mixed_precision: bf16
 num_machines: 1
