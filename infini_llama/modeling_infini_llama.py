@@ -53,12 +53,15 @@ from transformers.utils.import_utils import is_torch_fx_available
 from dataclasses import dataclass
 from transformers import LlamaConfig
 
+from ezcolorlog import root_logger as logger
+
 DEBUG = os.environ.get("DEBUG", False)
 
 
 def debug_print(*args):
     if DEBUG:
-        print(*args)
+        str_args = " ".join([str(arg) for arg in args])
+        logger.warning(str_args)
 
 
 if is_flash_attn_2_available():
@@ -970,6 +973,12 @@ class LlamaInfiniAttention(LlamaAttention):
         key_states = self.k_proj(segment)
         value_states = self.v_proj(segment)
 
+        debug_print(f"""[0] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        """)
+
         # Assuming the presence of batch size and dimension handling as before
         bsz, q_len, _ = segment.size()  # q_len == self.segment_size
         query_states = query_states.view(
@@ -982,9 +991,11 @@ class LlamaInfiniAttention(LlamaAttention):
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
 
-        debug_print("Query States Shape:", query_states.shape)
-        debug_print("Key States Shape:", key_states.shape)
-        debug_print("Value States Shape:", value_states.shape)
+        debug_print(f"""[1] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        """)
 
         # memory and norm_term should use layer_idx to store the memory and norm_term
         if no_memory_update:
@@ -1031,6 +1042,12 @@ class LlamaInfiniAttention(LlamaAttention):
             None,
         )
 
+        debug_print(f"""[1.3] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        """)
+
         # Basic cache
         past_key_value = getattr(self, "past_key_value", past_key_value)
         if past_key_value is not None:
@@ -1044,9 +1061,21 @@ class LlamaInfiniAttention(LlamaAttention):
                 key_states, value_states, self.layer_idx, cache_kwargs
             )
 
+        debug_print(f"""[1.7] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        """)
+
         # GQA
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        debug_print(f"""[2] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        """)
 
         causal_mask = attention_mask
         if attention_mask is not None:
@@ -1055,8 +1084,17 @@ class LlamaInfiniAttention(LlamaAttention):
             # ]  # FIXME: This is wrong, should be [:, :, :, :self.segment_size]
             causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
 
-        debug_print("causal_mask.shape", causal_mask.shape)
-        debug_print("query_states.shape", query_states.shape)
+        debug_print(f"""[3] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        causal_mask: {causal_mask.shape}
+
+        q_len: {q_len}
+        num_key_value_groups: {self.num_key_value_groups}
+        num_key_value_heads: {self.num_key_value_heads}
+        num_heads: {self.num_heads}
+        """)
 
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,

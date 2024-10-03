@@ -1,6 +1,7 @@
-# export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0
+export NCCL_DEBUG=INFO
+export DEBUG=true 
 
-# DEBUG=true 
 accelerate launch \
     --num_processes=1 \
     --mixed_precision='bf16' \

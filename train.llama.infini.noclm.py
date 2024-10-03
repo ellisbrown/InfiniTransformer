@@ -40,7 +40,7 @@ from accelerate.utils import set_seed
 from datasets import load_dataset
 from huggingface_hub import HfApi
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
+from tqdm import tqdm, trange
 
 import transformers
 from transformers import (
@@ -57,12 +57,17 @@ from transformers.utils.versions import require_version
 from infini_llama import LlamaForCausalLM, LlamaConfig
 from datasets import DatasetDict, interleave_datasets
 
+# from ezcolorlog import setup_logging
+from ezcolorlog import root_logger as logger
+
+
 torch.autograd.set_detect_anomaly(True)
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.40.0.dev0")
 
-logger = get_logger(__name__)
+# logger = get_logger(__name__)
+# setup_logging(logger)
 
 require_version(
     "datasets>=2.14.0",
@@ -323,10 +328,11 @@ def main():
     gradient_accumulation_steps = args.block_size // segment_length
     print("gradient_accumulation_steps:", gradient_accumulation_steps)
     print("args.gradient_accumulation_steps:", args.gradient_accumulation_steps)
-    if args.gradient_accumulation_steps != 1:
-        warnings.warn(f"Overwriting args.gradient_accumulation_steps to {gradient_accumulation_steps}")
-    print("overwriting args.gradient_accumulation_steps")
-    args.gradient_accumulation_steps = gradient_accumulation_steps
+    # if args.gradient_accumulation_steps != 1:
+    #     warnings.warn(f"Overwriting args.gradient_accumulation_steps to {gradient_accumulation_steps}")
+    # print("overwriting args.gradient_accumulation_steps")
+    # args.gradient_accumulation_steps = gradient_accumulation_steps
+    gradient_accumulation_steps = args.gradient_accumulation_steps
     accelerator = Accelerator(
         gradient_accumulation_steps=gradient_accumulation_steps,
         **accelerator_log_kwargs,
@@ -338,7 +344,8 @@ def main():
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
-    logger.info(accelerator.state, main_process_only=False)
+    if accelerator.is_local_main_process:
+        logger.info(accelerator.state)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -446,14 +453,14 @@ def main():
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
             # torch_dtype="auto",
-            device_map="auto",
+            # device_map="auto",
         )
     else:
         logger.info("Training new model from scratch")
         model = LlamaForCausalLM(
             config,
             # torch_dtype=torch.bfloat16,
-            device_map="auto",
+            # device_map="auto",
         )
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
@@ -489,12 +496,14 @@ def main():
             )
             block_size = min(1024, config.max_position_embeddings)
     else:
-        if args.block_size > tokenizer.model_max_length:
-            logger.warning(
-                f"The block_size passed ({args.block_size}) is larger than the maximum length for the model "
-                f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
-            )
-        block_size = min(args.block_size, tokenizer.model_max_length)
+        # NOTE: Seems like this should be applied to segment_length, not block size?
+        # if args.block_size > tokenizer.model_max_length:
+        #     logger.warning(
+        #         f"The block_size passed ({args.block_size}) is larger than the maximum length for the model "
+        #         f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
+        #     )
+        # block_size = min(args.block_size, tokenizer.model_max_length)
+        block_size = args.block_size
 
     # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
     def group_texts(examples):
@@ -596,9 +605,11 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = (
+    """NOTE: For PyTorch FDSP, you need to prepare the model first before preparing the optimizer since FSDP will shard parameters in-place and this will break any previously initialized optimizers."""
+    model = accelerator.prepare(model)
+    optimizer, train_dataloader, eval_dataloader, lr_scheduler = (
         accelerator.prepare(
-            model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
+            optimizer, train_dataloader, eval_dataloader, lr_scheduler
         )
     )
 
@@ -651,8 +662,10 @@ def main():
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     logger.info(f"  Number of model parameters = {model.num_parameters()}")
     # Only show the progress bar once on each machine.
-    progress_bar = tqdm(
-        range(args.max_train_steps), disable=not accelerator.is_local_main_process
+    progress_bar = trange(
+        args.max_train_steps,
+        desc="Steps",
+        disable=not accelerator.is_local_main_process
     )
     completed_steps = 0
     starting_epoch = 0
@@ -696,7 +709,6 @@ def main():
 
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
-        total_loss = 0
         if (
             args.resume_from_checkpoint
             and epoch == starting_epoch
@@ -708,8 +720,9 @@ def main():
             )
         else:
             active_dataloader = train_dataloader
+
+        total_loss = 0
         for step, batch in enumerate(active_dataloader):
-            total_segment_loss = 0
             # Segment the batch items into smaller chunks of 2048 tokens
             input_ids = torch.tensor_split(
                 batch["input_ids"],
@@ -739,8 +752,10 @@ def main():
                     dim=1,
                 )
             memory, norm_term = {}, {}
+            total_segment_loss = 0
             avg_segment_loss = 0
-            for i in range(len(input_ids)):
+            segbar = trange(len(input_ids), desc="Segments", disable=not accelerator.is_local_main_process)
+            for i in segbar:
                 outputs = model(
                     input_ids=input_ids[i],
                     attention_mask=attention_mask[i],
@@ -759,6 +774,16 @@ def main():
                 total_segment_loss += loss.detach().float()
                 # print("Total loss:", total_loss)
                 # print("Total segment loss:", total_segment_loss)
+
+
+                # calculate running averages
+                ravg_seg = total_segment_loss / (i + 1)
+                ravg_tot = total_loss / ((step * len(input_ids)) + (i + 1))
+
+                segbar.set_postfix(dict(
+                    tot_loss=f"{ravg_tot:.3f}",
+                    seg_loss=f"{ravg_seg:.3f}",
+                ))
 
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)

@@ -39,7 +39,7 @@ from accelerate.utils import set_seed
 from datasets import load_dataset
 from huggingface_hub import HfApi
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
+from tqdm import tqdm, trange
 
 import transformers
 from transformers import (
@@ -57,11 +57,14 @@ from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 from infini_gemma import GemmaForCausalLM, InfiniGemmaConfig
 from datasets import DatasetDict, interleave_datasets
+from ezcolorlog import setup_logging
+
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.40.0.dev0")
 
 logger = get_logger(__name__)
+setup_logging(logger)
 
 require_version(
     "datasets>=2.14.0",
@@ -319,10 +322,11 @@ def main():
     segment_length = args.segment_length
     print("block_size:", args.block_size)
     print("segment_length:", segment_length)
-    gradient_accumulation_steps = args.block_size // segment_length
-    print("gradient_accumulation_steps:", gradient_accumulation_steps)
+    print("gradient_accumulation_steps:", args.gradient_accumulation_steps)
+    args.gradient_accumulation_steps = args.gradient_accumulation_steps * args.block_size // segment_length
+    print("effective gradient_accumulation_steps:", args.gradient_accumulation_steps)
     accelerator = Accelerator(
-        gradient_accumulation_steps=gradient_accumulation_steps,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         **accelerator_log_kwargs,
     )
 
@@ -332,7 +336,7 @@ def main():
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
-    logger.info(accelerator.state, main_process_only=False)
+    logger.info(accelerator.state)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_info()
@@ -440,14 +444,20 @@ def main():
             low_cpu_mem_usage=args.low_cpu_mem_usage,
             trust_remote_code=args.trust_remote_code,
             # torch_dtype="auto",
-            device_map="auto",
+            # device_map="auto",
         )
     else:
         logger.info("Training new model from scratch")
         model = GemmaForCausalLM(
             config,
             # torch_dtype=torch.bfloat16,
-            device_map="auto",
+            # device_map="auto",
+        )
+
+    # assert that the passed segment_length equals the config semgent_size
+    if segment_length != config.segment_size:
+        raise ValueError(
+            f"segment_length ({segment_length}) must equal the config segment_size ({config.segment_size})"
         )
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
@@ -640,12 +650,14 @@ def main():
     logger.info(
         f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
     )
-    logger.info(f"  Gradient Accumulation steps = {gradient_accumulation_steps}")
+    logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
-    logger.info(f"  Number of model parameters = {model.num_parameters()}")
+    logger.info(f"  Number of model parameters = {model.module.num_parameters():,}")
     # Only show the progress bar once on each machine.
-    progress_bar = tqdm(
-        range(args.max_train_steps), disable=not accelerator.is_local_main_process
+    progress_bar = trange(
+        args.max_train_steps,
+        disable=not accelerator.is_local_main_process,
+        desc="Steps"
     )
     completed_steps = 0
     starting_epoch = 0
@@ -689,7 +701,6 @@ def main():
 
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
-        total_loss = 0
         if (
             args.resume_from_checkpoint
             and epoch == starting_epoch
@@ -701,8 +712,9 @@ def main():
             )
         else:
             active_dataloader = train_dataloader
+        
+        total_loss = 0
         for step, batch in enumerate(active_dataloader):
-            total_segment_loss = 0
             # Segment the batch items into smaller chunks of 2048 tokens
             input_ids = torch.tensor_split(
                 batch["input_ids"],
@@ -732,32 +744,52 @@ def main():
                     dim=1,
                 )
             memory, norm_term = None, None
+            total_segment_loss = 0
             avg_segment_loss = 0
-            for i in range(len(input_ids)):
-                outputs = model(
-                    input_ids=input_ids[i],
-                    attention_mask=attention_mask[i],
-                    labels=labels[i],
-                    memory=memory,
-                    norm_term=norm_term,
-                )
-                memory = outputs.memory
-                norm_term = outputs.norm_term
-                loss = outputs.loss
-                # print("Loss:", loss.item())
-                # accelerator.backward(loss, retain_graph=True)
-                accelerator.backward(loss)
-                total_loss += loss  # .detach().float()
-                total_segment_loss += loss  # .detach().float()
-                # print("Total loss:", total_loss)
-                # print("Total segment loss:", total_segment_loss)
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
+            # for i in trange(len(input_ids), desc="Segments"):
+            segbar = trange(len(input_ids), desc="Segments", disable=not accelerator.is_local_main_process)
+            for i in segbar:
+                with accelerator.accumulate(model):
+                    outputs = model(
+                        input_ids=input_ids[i],
+                        attention_mask=attention_mask[i],
+                        labels=labels[i],
+                        memory=memory,
+                        norm_term=norm_term,
+                    )
+                    memory = outputs.memory
+                    norm_term = outputs.norm_term
+                    loss = outputs.loss
 
-            if accelerator.sync_gradients:
-                progress_bar.update(1)
-                completed_steps += 1
+                    # print("Loss:", loss.item())
+                    # accelerator.backward(loss, retain_graph=True)
+                    accelerator.backward(loss)
+                    total_loss += loss  # .detach().float()
+                    total_segment_loss += loss  # .detach().float()
+
+                    # calculate running averages
+                    ravg_seg = total_segment_loss / (i + 1)
+                    ravg_tot = total_loss / ((step * len(input_ids)) + (i + 1))
+
+                    segbar.set_postfix(dict(
+                        tot_loss=f"{ravg_tot:.3f}",
+                        seg_loss=f"{ravg_seg:.3f}",
+                    ))
+
+                    # print("Total loss:", total_loss)
+                    # print("Total segment loss:", total_segment_loss)
+                
+
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+
+            segbar.close()
+            
+
+            progress_bar.update(1)
+            completed_steps += 1
+            
             # Log the training loss and lr every 100 steps
             LOG_INTERVAL = 1
             if completed_steps % LOG_INTERVAL == 0:

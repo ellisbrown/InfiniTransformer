@@ -1,8 +1,10 @@
 import os
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"  # TODO: set the GPU device
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # TODO: set the GPU device
 os.environ["WANDB_PROJECT"] = "InfiniTransformer"
 # os.environ["WANDB_MODE"] = "offline"
+
+# os.environ["DEBUG"] = "True"
 
 
 from itertools import chain

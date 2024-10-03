@@ -54,12 +54,17 @@ from transformers.utils.import_utils import is_torch_fx_available
 from dataclasses import dataclass
 from .configuration_infini_gemma import InfiniGemmaConfig
 
+from ezcolorlog import root_logger as logger
+
+
 DEBUG = os.environ.get("DEBUG", False)
+
 
 
 def debug_print(*args):
     if DEBUG:
-        print(*args)
+        str_args = " ".join([str(arg) for arg in args])
+        logger.warning(str_args)
 
 
 if is_flash_attn_2_available():
@@ -76,7 +81,7 @@ if is_torch_fx_available():
     _prepare_4d_causal_attention_mask = torch.fx.wrap(_prepare_4d_causal_attention_mask)
 
 
-logger = logging.get_logger(__name__)
+# logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "GemmaConfig"
 
@@ -347,7 +352,9 @@ class GemmaAttention(nn.Module):
             )
 
         self.q_proj = nn.Linear(
-            self.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias
+            self.hidden_size,
+            self.num_heads * self.head_dim,
+            bias=config.attention_bias
         )
         self.k_proj = nn.Linear(
             self.hidden_size,
@@ -360,7 +367,9 @@ class GemmaAttention(nn.Module):
             bias=config.attention_bias,
         )
         self.o_proj = nn.Linear(
-            self.num_heads * self.head_dim, self.hidden_size, bias=config.attention_bias
+            self.num_heads * self.head_dim,
+            self.hidden_size,
+            bias=config.attention_bias
         )
         self.rotary_emb = GemmaRotaryEmbedding(
             self.head_dim,
@@ -791,6 +800,7 @@ class GemmaInfiniAttention(GemmaAttention):
         # Each head has its own gate
         # init with -100 to make it close to 0 effect at the beginning
         self.gate = nn.Parameter(torch.full((1, self.num_heads, 1, 1), -100.0))
+        # self.gate = nn.Parameter(torch.full((1, self.num_heads, 1, 1), 0.0))
         self.segment_size = config.segment_size
 
     def forward(
@@ -802,8 +812,8 @@ class GemmaInfiniAttention(GemmaAttention):
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
-        memory: Optional[torch.Tensor] = None,
-        norm_term: Optional[torch.Tensor] = None,
+        memory: Optional[dict] = None,
+        norm_term: Optional[dict] = None,
         no_memory_update: bool = False,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
@@ -816,6 +826,12 @@ class GemmaInfiniAttention(GemmaAttention):
         key_states = self.k_proj(segment)
         value_states = self.v_proj(segment)
 
+        debug_print(f"""[0] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        """)
+
         # Assuming the presence of batch size and dimension handling as before
         bsz, q_len, _ = segment.size()  # q_len == self.segment_size
         query_states = query_states.view(
@@ -827,6 +843,15 @@ class GemmaInfiniAttention(GemmaAttention):
         value_states = value_states.view(
             bsz, q_len, self.num_key_value_heads, self.head_dim
         ).transpose(1, 2)
+
+        # debug_print("Query States Shape:", query_states.shape)
+        # debug_print("Key States Shape:", key_states.shape)
+        # debug_print("Value States Shape:", value_states.shape)
+        debug_print(f"""[1] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        """)
 
         # memory and norm_term should use layer_idx to store the memory and norm_term
         if no_memory_update:
@@ -863,15 +888,23 @@ class GemmaInfiniAttention(GemmaAttention):
             norm_term[self.layer_idx] = updated_norm_term.detach()
 
         # Rotary embeddings, set seq_len to q_len as we are processing a segment
-        cos, sin = self.rotary_emb(value_states, position_ids, seq_len=q_len)
+        cos, sin = self.rotary_emb(value_states, position_ids)
 
         query_states, key_states = apply_rotary_pos_emb(
             query_states,
             key_states,
-            cos[:, : min(self.segment_size, q_len), :],
-            sin[:, : min(self.segment_size, q_len), :],
+            # cos,  # cos[:, : min(self.segment_size, q_len), :],
+            # sin,  # sin[:, : min(self.segment_size, q_len), :],
+            cos,
+            sin,
             None,
         )
+
+        debug_print(f"""[2] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        """)
 
         # Basic cache
         past_key_value = getattr(self, "past_key_value", past_key_value)
@@ -892,12 +925,24 @@ class GemmaInfiniAttention(GemmaAttention):
 
         causal_mask = attention_mask
         if attention_mask is not None:
-            causal_mask = causal_mask[
-                :, :, : min(self.segment_size, q_len), : key_states.shape[-2]
-            ]  # FIXME: This is wrong, should be [:, :, :, :self.segment_size]
+            # causal_mask = causal_mask[
+            #     :, :, : min(self.segment_size, q_len), : key_states.shape[-2]
+            # ]  # FIXME: This is wrong, should be [:, :, :, :self.segment_size]
+            # causal_mask = causal_mask[:, :, :, : key_states.shape[-1]]
+            causal_mask = causal_mask[:, :, : q_len, : key_states.shape[-2]]
 
-        debug_print("causal_mask.shape", causal_mask.shape)
-        debug_print("query_states.shape", query_states.shape)
+        debug_print(f"""[3] Shapes:
+        query_states: {query_states.shape}
+        key_states: {key_states.shape}
+        value_states: {value_states.shape}
+        causal_mask: {causal_mask.shape}
+
+        q_len: {q_len}
+        segment_size: {self.segment_size}
+        num_key_value_groups: {self.num_key_value_groups}
+        num_key_value_heads: {self.num_key_value_heads}
+        num_heads: {self.num_heads}
+        """)
 
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_states,
@@ -945,8 +990,13 @@ class GemmaInfiniAttention(GemmaAttention):
         debug_print("[Retrieve] self.memory.shape", memory.shape)
 
         # Apply ELU activation
-        query_states = F.elu(query_states) + 1  # ELU activation + 1 for stability
-        memory_output = torch.matmul(query_states, memory)
+        # ELU activation + 1 for stability
+        query_states = F.elu(query_states) + 1
+        memory_output = torch.matmul(
+            # GQA
+            query_states,
+            memory.repeat(1, self.num_key_value_groups, 1, 1),
+        )
 
         debug_print("[Retrieve] memory_output.shape", memory_output.shape)
         debug_print("[Retrieve] self.norm_term.shape", norm_term.shape)
@@ -954,7 +1004,8 @@ class GemmaInfiniAttention(GemmaAttention):
         # Broadcast norm_term to the shape of query_states, then sum across head_dim for normalization
         norm_term_broadcastable = torch.matmul(
             query_states,
-            norm_term.transpose(-2, -1),
+            # GQA
+            norm_term.transpose(-2, -1).repeat(1, self.num_key_value_groups, 1, 1),
         )
         debug_print(
             "[Broadcast] norm_term_broadcastable.shape", norm_term_broadcastable.shape
